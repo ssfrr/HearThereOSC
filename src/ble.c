@@ -69,7 +69,7 @@ BLE_Status BLE_Connect(BLE_Connection **conn, const char *devMAC)
 
 // handle can be used to limit which handles should trigger the callback. It
 // can be BLE_ANY_HANDLE to accept from any handle
-BLE_Status BLE_RegisterNotificationCallback(BLE_Connection conn, int handle,
+BLE_Status BLE_RegisterNotificationCallback(BLE_Connection *conn, int handle,
         NotificationCallback cb, void *param)
 {
     return BLE_SUCCESS;
@@ -80,7 +80,7 @@ BLE_Status BLE_Disconnect(BLE_Connection *conn)
     return BLE_SUCCESS;
 }
 
-const char *GetErrorText(BLE_Status status)
+const char *BLE_GetErrorText(BLE_Status status)
 {
     return StatusStrings[status];
 }

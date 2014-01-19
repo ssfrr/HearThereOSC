@@ -6,5 +6,7 @@ OBJECTS=$(SOURCES:.c=.o)
 LIBS=-llo -lbluetooth
 
 rfduino_osc: $(OBJECTS)
-	gcc -orfduino_osc $(LIBS)
+	gcc -o$@ $(OBJECTS) $(LIBS)
 
+clean:
+	rm -rf $(OBJECTS) rfduino_osc

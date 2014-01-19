@@ -16,11 +16,12 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include "lo/lo.h"
 #include "ble.h"
 
 #define OSC_HOST "localhost"
-#define OST_PORT "9383"
+#define OSC_PORT "9383"
 #define OSC_PATH "/ble"
 
 #define CONFIGURATION_HANDLE 0x000f
@@ -28,8 +29,8 @@
 
 #define HANDLE_STATUS(expr) handleStatus((expr), __FILE__, __LINE__)
 
-static void handleStatus(BLE_Status status);
-static void bleDataReceived(int handle, void *data,
+static void handleStatus(BLE_Status status, const char* fileName, int lineNum);
+static void bleDataReceived(int handle, uint8_t *data,
         size_t dataLen, void *param);
 
 int main(int argc, char **argv)
@@ -41,7 +42,7 @@ int main(int argc, char **argv)
     status = BLE_Connect(&conn, RFDUINO_MAC);
     HANDLE_STATUS(status);
 
-    status = BLE_WriteUint16Request(conn, NOTIFICATION_HANDLE, 0x0001, NULL);
+    status = BLE_WriteUint16Request(conn, CONFIGURATION_HANDLE, 0x0001, NULL);
     HANDLE_STATUS(status);
 
     status = BLE_RegisterNotificationCallback(conn, BLE_ANY_HANDLE,
@@ -58,7 +59,7 @@ int main(int argc, char **argv)
     HANDLE_STATUS(status);
 }
 
-static void bleDataReceived(int handle, void *data,
+static void bleDataReceived(int handle, uint8_t *data,
         size_t dataLen, void *param)
 {
     lo_address addr = *(lo_address *)param;
@@ -80,5 +81,5 @@ static void handleStatus(BLE_Status status, const char* fileName, int lineNum)
     }
     printf("BLE Error (%s:%d): %s\n", fileName, lineNum,
             BLE_GetErrorText(status));
-    exit(BLE_STATUS);
+    exit(status);
 }
