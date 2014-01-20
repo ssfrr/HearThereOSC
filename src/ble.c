@@ -24,17 +24,16 @@
  * INTERNAL DEFINES AND TYPES
  **/
 
-struct BLE_Connection
-{
-    int dummy;
-};
-
 #define ATT_OP_WRITE_REQ 0x12
 
 // TODO: these are probably in a header file
 #define ATT_CID 4
 #define BDADDR_LE_PUBLIC       0x01
 #define BDADDR_LE_RANDOM       0x02
+
+#define MAX_NOTIFICATION_CALLBACKS 32
+// TODO: what should this actually be?
+#define MAX_MSG_SIZE 255
 
 // TODO: this is in l2cap.h, but including that gives a bunch of other errors
 struct sockaddr_l2 {
@@ -45,18 +44,46 @@ struct sockaddr_l2 {
   uint8_t        l2_bdaddr_type;
 };
 
+struct BLE_Connection
+{
+    int hci_sock;
+    int l2cap_sock;
+};
+
+
 /**
  * MODULE DATA
  **/
 
+// note the dummy string used for BLE_ESYSTEM, as BLE_GetErrorText passes
+// through the string corresponding to the errno
 static const char *StatusStrings[] = {
     "Success",
-    "Invalid argument given",
+    "Invalid Argument",
+    "",
+    "Could not open HCI socket",
+    "Could not open L2CAP socket",
+    "Could not bind to L2CAP socket",
+    "Could not connect to BLE Peripheral matching MAC address",
+    "Callback table full",
 };
+
+// TODO: callbacks should be stored per-connection, probably in a linked list
+static NotificationCallback NotificationCallbacks[MAX_NOTIFICATION_CALLBACKS];
+static void *NotificationCallbackParams[MAX_NOTIFICATION_CALLBACKS];
+// initialized to zero because it's declared static
+static int NumNotificationCallbacks = 0;
 
 /**
  * PRIVATE FUNCTION DECLARATIONS
  **/
+static int get_l2cap_socket(void);
+static int get_hci_socket(void);
+static int bind_l2cap_socket(int l2cap_sock);
+static int connect_l2cap_socket(int l2cap_sock, const char *dev_addr,
+        uint8_t bdaddr_type);
+void addUint16(uint8_t *dest, uint16_t value);
+uint16_t getUint16(uint8_t *src);
 
 /**
  * PUBLIC FUNCTION DEFINITIONS
@@ -64,6 +91,65 @@ static const char *StatusStrings[] = {
 
 BLE_Status BLE_Connect(BLE_Connection **conn, const char *devMAC)
 {
+    int status;
+    int l2cap_sock, hci_sock;
+
+    if(NULL == conn)
+    {
+        return BLE_EINVAL;
+    }
+
+    hci_sock = get_hci_socket();
+    if (hci_sock < 0) {
+        return BLE_EHCI_OPEN;
+    }
+
+    l2cap_sock = get_l2cap_socket();
+
+    if (l2cap_sock < 0) {
+        hci_close_dev(hci_sock);
+        return BLE_EL2CAP_OPEN;
+    }
+
+    status = bind_l2cap_socket(l2cap_sock);
+    if(status == -1)
+    {
+        hci_close_dev(hci_sock);
+        close(l2cap_sock);
+        return BLE_EL2CAP_BIND;
+    }
+
+    // TODO: should BDADDR_LE_RANDOM come from func args?
+    status = connect_l2cap_socket(l2cap_sock, devMAC, BDADDR_LE_RANDOM);
+    if(status == -1)
+    {
+        hci_close_dev(hci_sock);
+        close(l2cap_sock);
+        return BLE_ECONNECT;
+    }
+
+    *conn = (BLE_Connection *)malloc(sizeof(BLE_Connection));
+    if(NULL == *conn)
+    {
+        int tempErrno = errno;
+        hci_close_dev(hci_sock);
+        close(l2cap_sock);
+        // restore errno so the user gets the original error.
+        errno = tempErrno;
+        return BLE_ESYSTEM;
+    }
+
+    (*conn)->hci_sock = hci_sock;
+    (*conn)->l2cap_sock = l2cap_sock;
+
+    return BLE_SUCCESS;
+}
+
+BLE_Status BLE_Disconnect(BLE_Connection *conn)
+{
+    hci_close_dev(conn->hci_sock);
+    close(conn->l2cap_sock);
+    free(conn);
     return BLE_SUCCESS;
 }
 
@@ -72,17 +158,20 @@ BLE_Status BLE_Connect(BLE_Connection **conn, const char *devMAC)
 BLE_Status BLE_RegisterNotificationCallback(BLE_Connection *conn, int handle,
         NotificationCallback cb, void *param)
 {
+    //TODO: store handle to be used in later filtering
+    if(BLE_ANY_HANDLE != handle)
+    {
+        printf("Filtering by handle currently not supported");
+        return BLE_EINVAL;
+    }
+    if(NumNotificationCallbacks == MAX_NOTIFICATION_CALLBACKS)
+    {
+        return BLE_ECALLBACKS_FULL;
+    }
+    NotificationCallbacks[NumNotificationCallbacks] = cb;
+    NotificationCallbackParams[NumNotificationCallbacks] = param;
+    ++NumNotificationCallbacks;
     return BLE_SUCCESS;
-}
-
-BLE_Status BLE_Disconnect(BLE_Connection *conn)
-{
-    return BLE_SUCCESS;
-}
-
-const char *BLE_GetErrorText(BLE_Status status)
-{
-    return StatusStrings[status];
 }
 
 // if a callback is given then then the function returns as soon as the command
@@ -90,17 +179,56 @@ const char *BLE_GetErrorText(BLE_Status status)
 // the response is received. If the callback is NULL the function blocks until
 // the response is received.
 BLE_Status BLE_WriteUint16Request(BLE_Connection *conn, int handle,
-        uint16_t value, WriteRequestCallback cb)
+        uint16_t value, WriteRequestCallback cb, void *param)
 {
+    uint8_t buf[5];
+    int read_bytes;
+    if(NULL != cb || NULL != param)
+    {
+        printf("async attribute writing (with callback) not supported yet\n");
+        return BLE_EINVAL;
+    }
+    buf[0] = ATT_OP_WRITE_REQ;
+    addUint16(&buf[1], handle);
+    addUint16(&buf[3], value);
+    // TODO: what errors can this throw?
+    write(conn->l2cap_sock, buf, sizeof(buf));
+    // here we wait for the response
+    // TODO: some error handling to verify we actually get the ACK we expect
+    read_bytes = read(conn->l2cap_sock, buf, sizeof(buf));
     return BLE_SUCCESS;
 }
 
 BLE_Status BLE_HandleEvents(BLE_Connection *conn, int timeoutMs)
 {
+    int i;
+    int read_bytes;
+    uint8_t buf[MAX_MSG_SIZE];
+    uint8_t opcode;
+    uint16_t handle;
+    // TODO: what errors can this throw?
+    read_bytes = read(conn->l2cap_sock, buf, sizeof(buf));
+    opcode = buf[0];
+    handle = getUint16(&buf[1]);
+    for(i = 0; i < NumNotificationCallbacks; ++i)
+    {
+        if(NotificationCallbacks[i])
+        {
+            NotificationCallbacks[i](handle, &buf[3], read_bytes - 3,
+                    NotificationCallbackParams[i]);
+        }
+    }
     return BLE_SUCCESS;
 }
 
-
+const char *BLE_GetErrorText(BLE_Status status)
+{
+    if(BLE_ESYSTEM == status)
+    {
+        return strerror(errno);
+    }
+    return StatusStrings[status];
+}
 
 /**
  * PRIVATE FUNCTION DEFINITIONS
@@ -137,7 +265,8 @@ static int bind_l2cap_socket(int l2cap_sock)
 
 // takes the address of the device to connect to (e.g. "E6:4B:E0:99:63:8C")
 // and an address type which is either BDADDR_LE_RANDOM or BDADDR_LE_PUBLIC
-static int connect_l2cap_socket(int l2cap_sock, const char *dev_addr, uint8_t bdaddr_type)
+static int connect_l2cap_socket(int l2cap_sock, const char *dev_addr,
+        uint8_t bdaddr_type)
 {
     struct sockaddr_l2 sockAddr;
 
@@ -164,69 +293,14 @@ static void process_l2cap_data(int l2cap_sock)
     printf("\n");
 }
 
-static void enable_rfduino_notifications(int l2cap_socket)
+void addUint16(uint8_t *dest, uint16_t value)
 {
-    // format is opcode, handle_LSB, handle_MSB, data
-    // handle for configuration is 0x000f
-    // value is 0x0001 to enable notifications
-    uint8_t cmdbuf[] = {ATT_OP_WRITE_REQ, 0x0f, 0x00, 0x01, 0x00};
-    write(l2cap_socket, cmdbuf, sizeof(cmdbuf));
+    dest[0] = value & 0xff;
+    dest[1] = value >> 8;
 }
 
-
-int ble_init(void)
+uint16_t getUint16(uint8_t *src)
 {
-    int hci_sock, l2cap_sock;
-    int status;
-    // TODO: get address by scanning
-    char addr[19] = {"E6:4B:E0:99:63:8C"};
-
-    hci_sock = get_hci_socket();
-    if (hci_sock < 0) {
-        perror("opening hci socket");
-        goto no_cleanup;
-    }
-
-    l2cap_sock = get_l2cap_socket();
-    if (l2cap_sock < 0) {
-        perror("opening l2cap socket");
-        goto cleanup_hci;
-    }
-
-    status = bind_l2cap_socket(l2cap_sock);
-    printf("bind: ");
-    if(status == -1)
-    {
-        printf("%s\n", strerror(errno));
-        goto cleanup_l2cap;
-    }
-    printf("success\n");
-
-    status = connect_l2cap_socket(l2cap_sock, addr, BDADDR_LE_RANDOM);
-    printf("connect: ");
-    if(status == -1)
-    {
-        printf("%s\n", strerror(errno));
-        goto cleanup_l2cap;
-    }
-    printf("success\n");
-
-    enable_rfduino_notifications(l2cap_sock);
-
-    while(1)
-    {
-        process_l2cap_data(l2cap_sock);
-    }
-
-cleanup_l2cap:
-    close(l2cap_sock);
-
-cleanup_hci:
-    /* we could use the normal close() here, but we use hci_close_dev for
-     * symmetry, in case the bluetooth people add some cleanup code later */
-    hci_close_dev(hci_sock);
-
-no_cleanup:
-
-    return 0;
+    return (src[1] << 8) | src[0];
 }
+
