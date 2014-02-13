@@ -208,8 +208,19 @@ BLE_Status BLE_HandleEvents(BLE_Connection *conn, int timeoutMs)
     uint16_t handle;
     // TODO: what errors can this throw?
     read_bytes = read(conn->l2cap_sock, buf, sizeof(buf));
+    if(read_bytes == -1)
+    {
+        return BLE_ESYSTEM;
+    }
+    if(read_bytes < 3)
+    {
+        printf("Received short packet: %d bytes\n", read_bytes);
+        // not a fatal error, just consider it like no message was received
+        return BLE_SUCCESS;
+    }
     opcode = buf[0];
     handle = getUint16(&buf[1]);
+
     for(i = 0; i < NumNotificationCallbacks; ++i)
     {
         if(NotificationCallbacks[i])
