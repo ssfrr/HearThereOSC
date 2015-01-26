@@ -22,25 +22,13 @@
 #include "ble.h"
 
 #define OSC_HOST "localhost"
-#define OSC_PORT "9383"
-#define OSC_BASE_PATH "/ble/"
+#define OSC_PORT "10001"
+#define OSC_PATH "/orientation"
 
 #define CONFIGURATION_HANDLE 0x000f
-#define RFDUINO_MAC "E6:4B:E0:99:63:8C"
+#define RFDUINO_MAC "E2:BB:09:A5:B9:58"
 
 #define HANDLE_STATUS(expr) handleStatus((expr), __FILE__, __LINE__)
-
-const char *SensorNames[] = {
-    "accel_x",
-    "accel_y",
-    "accel_z",
-    "mag_x",
-    "mag_y",
-    "mag_z",
-    "gyro_x",
-    "gyro_y",
-    "gyro_z"
-};
 
 static void handleStatus(BLE_Status status, const char* fileName, int lineNum);
 static void bleDataReceived(int16_t handle, uint8_t *data,
@@ -81,22 +69,21 @@ static void bleDataReceived(int16_t handle, uint8_t *data,
 {
     int i;
     lo_address addr = *(lo_address *)param;
-    if(dataLen != 18)
+
+    if(dataLen != 9)
     {
-        printf("got packet of %zu bytes! expected 18\n", dataLen);
+        printf("got packet of %zu bytes! expected 9\n", dataLen);
         return;
     }
 
     for(i = 0; i < 9; ++i)
     {
-        // path must start with a 0 so it's considered a 0-length string
-        char path[255] = {0};
-        int16_t value = (data[2*i] << 8) + data[2*i+1];
-        // TODO: use strncat
-        strcat(path, OSC_BASE_PATH);
-        strcat(path, SensorNames[i]);
-        //printf("Received %s of %d\n", SensorNames[i], value);
-        if (lo_send(addr, path, "i", value) == -1)
+        uint8_t seq = data[0];
+        int16_t w = (data[1] << 8) + data[2];
+        int16_t x = (data[3] << 8) + data[4];
+        int16_t y = (data[5] << 8) + data[6];
+        int16_t z = (data[7] << 8) + data[8];
+        if (lo_send(addr, OSC_PATH, "ffff", w, x, y, z) == -1)
         {
             printf("OSC error %d: %s\n", lo_address_errno(addr),
                    lo_address_errstr(addr));
