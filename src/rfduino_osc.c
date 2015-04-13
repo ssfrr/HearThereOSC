@@ -25,8 +25,9 @@
 #define OSC_PORT "10001"
 #define OSC_PATH "/orientation"
 
-#define CONFIGURATION_HANDLE 0x000f
-#define RFDUINO_MAC "E2:BB:09:A5:B9:58"
+#define ORIENTATION_CCCD_HANDLE 0x000f
+#define CALIBRATION_HANDLE 0x0011
+#define RFDUINO_MAC "FB:53:83:F3:18:FD"
 
 #define HANDLE_STATUS(expr) handleStatus((expr), __FILE__, __LINE__)
 
@@ -44,13 +45,19 @@ int main(int argc, char **argv)
     status = BLE_Connect(&conn, RFDUINO_MAC);
     HANDLE_STATUS(status);
 
-    printf("Configuring...\n");
-    status = BLE_WriteUint16Request(conn, CONFIGURATION_HANDLE, 0x0001, NULL, NULL);
-    HANDLE_STATUS(status);
+    sleep(1);
+//    printf("Starting Calibration...\n");
+//    status = BLE_WriteUint16Request(conn, CALIBRATION_HANDLE, 0x0003, NULL, NULL);
+//    printf("Chilling Out...\n");
+//    sleep(5);
 
     printf("Registering Notification Callback...\n");
     status = BLE_RegisterNotificationCallback(conn, BLE_ANY_HANDLE,
             bleDataReceived, (void *)&addr);
+    HANDLE_STATUS(status);
+
+    printf("Enabling Orientation Notifications...\n");
+    status = BLE_WriteUint16Request(conn, ORIENTATION_CCCD_HANDLE, 0x0001, NULL, NULL);
     HANDLE_STATUS(status);
 
     printf("Starting handler loop...\n");
@@ -67,27 +74,29 @@ int main(int argc, char **argv)
 static void bleDataReceived(int16_t handle, uint8_t *data,
         size_t dataLen, void *param)
 {
+    // initialize last_seq to -1 as a sentinel value meaning uninitialized
+    static int last_seq = -1;
     int i;
     lo_address addr = *(lo_address *)param;
 
-    if(dataLen != 9)
+    if(dataLen != 17)
     {
-        printf("got packet of %zu bytes! expected 9\n", dataLen);
+        printf("got packet of %zu bytes! expected 17\n", dataLen);
         return;
     }
 
-    for(i = 0; i < 9; ++i)
-    {
-        uint8_t seq = data[0];
-        int16_t w = (data[1] << 8) + data[2];
-        int16_t x = (data[3] << 8) + data[4];
-        int16_t y = (data[5] << 8) + data[6];
-        int16_t z = (data[7] << 8) + data[8];
-        if (lo_send(addr, OSC_PATH, "ffff", w, x, y, z) == -1)
-        {
-            printf("OSC error %d: %s\n", lo_address_errno(addr),
-                   lo_address_errstr(addr));
-        }
+    uint8_t seq = data[0];
+    float w = *(float *)(data + 1);
+    float x = *(float *)(data + 5);
+    float y = *(float *)(data + 9);
+    float z = *(float *)(data + 13);
+    if(last_seq != -1 && seq != (uint8_t)(last_seq + 1)) {
+        printf("Unexpected sequence number %d. Lost %d packets.\n", seq, (uint8_t)(seq - last_seq));
+    }
+    last_seq = seq;
+    if(lo_send(addr, OSC_PATH, "ffff", w, x, y, z) == -1) {
+        printf("OSC error %d: %s\n", lo_address_errno(addr),
+               lo_address_errstr(addr));
     }
 }
 
