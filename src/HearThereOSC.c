@@ -27,7 +27,9 @@
 
 #define ORIENTATION_CCCD_HANDLE 0x000f
 #define CALIBRATION_HANDLE 0x0011
-#define RFDUINO_MAC "FB:53:83:F3:18:FD"
+
+#define RFDUINO_MAC "FB:53:83:F3:18:FD" // donatello
+//#define RFDUINO_MAC "F0:AB:47:E7:43:62" // raphael
 
 #define HANDLE_STATUS(expr) handleStatus((expr), __FILE__, __LINE__)
 
